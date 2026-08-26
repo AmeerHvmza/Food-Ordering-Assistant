@@ -1,0 +1,24 @@
+{
+  "_comment": "Pricing tiers. Data, not code: edit limits here without touching request handling. Loaded at startup and validated; an unknown or malformed tier fails loudly rather than silently defaulting to something generous. Override the path with TIERS_CONFIG_PATH.",
+
+  "free": {
+    "description": "Evaluation and hobby use.",
+    "requests_per_minute": 20,
+    "requests_per_day": 100,
+    "burst": 10
+  },
+
+  "pro": {
+    "description": "Production integrations.",
+    "requests_per_minute": 120,
+    "requests_per_day": 10000,
+    "burst": 60
+  },
+
+  "unlimited": {
+    "description": "Internal, local development and the demo page.",
+    "requests_per_minute": 600,
+    "requests_per_day": 1000000,
+    "burst": 200
+  }
+}

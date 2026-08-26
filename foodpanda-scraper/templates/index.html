@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Top Rated Restaurants · Local Browse{% endblock %}
+{% block content %}
+<section class="page-intro">
+  <h1>Top rated restaurants</h1>
+  <p>{{ restaurants|length }} restaurants in the local database, sorted by rating.</p>
+</section>
+
+{% if not restaurants %}
+  <p class="empty">No restaurants yet. Run <code>python main.py --fresh --top-rated=True</code> first.</p>
+{% else %}
+  <div class="restaurant-grid">
+    {% for r in restaurants %}
+      <a class="restaurant-card" href="{{ url_for('restaurant_page', restaurant_id=r.id) }}">
+        <div class="card-media">
+          {% if r.image_url %}
+            <img src="{{ r.image_url }}" alt="" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="media-fallback" style="display:none;" aria-hidden="true">{{ r.name[:1] }}</div>
+          {% else %}
+            <div class="media-fallback" aria-hidden="true">{{ r.name[:1] }}</div>
+          {% endif %}
+        </div>
+        <div class="card-body">
+          <h2>{{ r.name }}</h2>
+          <div class="meta">
+            {% if r.rating is not none %}
+              <span class="rating">★ {{ '%.1f'|format(r.rating) }}</span>
+            {% else %}
+              <span class="rating muted">No rating</span>
+            {% endif %}
+            {% if r.delivery_time %}
+              <span class="delivery">From {{ r.delivery_time|replace(' min', '') }} min</span>
+            {% endif %}
+          </div>
+          {% if r.cuisine %}
+            <p class="cuisine">{{ r.cuisine }}</p>
+          {% endif %}
+          <p class="item-count">{{ r.item_count }} menu items</p>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+{% endif %}
+{% endblock %}

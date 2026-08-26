@@ -1,0 +1,31 @@
+# Ordering assistant (Milestone 1). The scraper has its own requirements file
+# in foodpanda-scraper/requirements.txt.
+
+# Agent
+langgraph==1.1.4
+langchain==1.2.14
+langchain-core==1.5.4
+
+# Chat model providers: install at least one and set its API key.
+langchain-openai==1.4.3
+langchain-anthropic==1.5.6
+langchain-groq==1.1.3
+langchain-google-genai==4.3.4
+
+# API
+fastapi==0.139.0
+uvicorn==0.51.0
+pydantic==2.13.4
+python-dotenv==1.1.0
+python-multipart==0.0.20
+
+# Voice (Milestone 5): Whisper STT + Orpheus TTS. langchain-groq already
+# pulls groq; pin it so voice/ can import the SDK directly.
+groq==0.37.1
+
+# policies.md extraction (scripts/fetch_policies.py)
+requests==2.32.3
+beautifulsoup4==4.14.3
+
+# Milestone 2 daily scrape (--daemon). --run-now does not need this.
+apscheduler==3.11.0

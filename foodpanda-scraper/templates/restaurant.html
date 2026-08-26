@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ restaurant.name }} · Menu{% endblock %}
+{% block content %}
+<p class="back"><a href="{{ url_for('index') }}">← All restaurants</a></p>
+
+<section class="restaurant-hero">
+  {% if restaurant.image_url %}
+    <img class="hero-img" src="{{ restaurant.image_url }}" alt="" loading="lazy" onerror="this.remove()">
+  {% endif %}
+  <div>
+    <h1>{{ restaurant.name }}</h1>
+    <div class="meta">
+      {% if restaurant.rating is not none %}
+        <span class="rating">★ {{ '%.1f'|format(restaurant.rating) }}</span>
+      {% endif %}
+      {% if restaurant.delivery_time %}
+        <span class="delivery">{{ restaurant.delivery_time }}</span>
+      {% endif %}
+      <span class="item-count">{{ restaurant.item_count }} items</span>
+    </div>
+    {% if restaurant.cuisine %}
+      <p class="cuisine">{{ restaurant.cuisine }}</p>
+    {% endif %}
+    {% if restaurant.address %}
+      <p class="address">{{ restaurant.address }}</p>
+    {% endif %}
+    {% if restaurant.url %}
+      <p class="source"><a href="{{ restaurant.url }}" target="_blank" rel="noopener">View on Foodpanda</a></p>
+    {% endif %}
+  </div>
+</section>
+
+{% if not restaurant.categories %}
+  <p class="empty">No menu items stored for this restaurant.</p>
+{% else %}
+  {% for category in restaurant.categories %}
+    <section class="menu-category">
+      <h2>{{ category.category_name }}</h2>
+      <div class="menu-list">
+        {% for item in category.menu_items %}
+          <article class="menu-item">
+            <div class="menu-item-text">
+              <h3>{{ item.name }}</h3>
+              {% if item.description %}
+                <p class="desc">{{ item.description }}</p>
+              {% endif %}
+              {% if item.price %}
+                <p class="price">PKR {{ item.price }}</p>
+              {% endif %}
+            </div>
+            {% if item.image_url %}
+              <img class="menu-thumb" src="{{ item.image_url }}" alt="" loading="lazy" onerror="this.remove()">
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    </section>
+  {% endfor %}
+{% endif %}
+{% endblock %}

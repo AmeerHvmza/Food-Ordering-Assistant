@@ -1,0 +1,45 @@
+﻿# secrets
+.env
+.env.*
+!.env.example
+
+# your own working docs, not part of the app
+plans/
+
+# bytecode
+__pycache__/
+*.pyc
+
+# runtime/generated data - foodpanda.db is intentionally NOT here (committed for clone-and-demo)
+data/tenants.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.db.rejected
+
+# logs
+*.log
+
+# scrape discovery dumps
+*dry_run*.txt
+
+# scrape lock left behind if a run is killed
+scheduler/daily_scrape.lock
+
+# local Python envs / test junk
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# local Cursor plans, Playwright leftovers
+.cursor/
+playwright-report/
+test-results/
