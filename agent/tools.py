@@ -21,6 +21,13 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
+from agent.freshness import (
+    accepted_cart,
+    check_open,
+    format_cart_diff,
+    freshness_block,
+    precheck_cart,
+)
 from agent.state import (
     apply_cart_write,
     cart_item_count,
@@ -204,6 +211,26 @@ def _tool_reply(content: str, tool_call_id: str, update: dict[str, Any]) -> Comm
     return Command(update=payload)
 
 
+def _release_lock_update(
+    state: dict[str, Any],
+    *,
+    showcase: dict[str, Any] | None = None,
+    clear_cart: bool = False,
+) -> dict[str, Any]:
+    """Clear restaurant_id/name so the UI shows Restaurant: —."""
+    update: dict[str, Any] = {
+        "restaurant_id": None,
+        "restaurant_name": None,
+        "order_summary": None,
+        "showcase": showcase
+        if showcase is not None
+        else empty_showcase(showcase_step(state)),
+    }
+    if clear_cart:
+        update["cart"] = []
+    return update
+
+
 @tool
 def remember_preferences(
     state: Annotated[dict, InjectedState],
@@ -248,15 +275,31 @@ def search_restaurants(
 ) -> Command:
     """Find restaurants matching a craving, area and budget.
 
-    NEVER call this until you know the user's area. Do not call this if a
-    restaurant is already locked unless the user asks to browse or switch.
-    craving may name a cuisine or a dish. Results are ordered by relevance
-    then review-weighted rating. Does not lock.
+    NEVER call this until you know the user's area. If a restaurant is locked
+    and the cart has items, this refuses until they confirm unlocking. Empty
+    cart: releases the lock and searches. craving may name a cuisine or a dish.
+    Results are ordered by relevance then review-weighted rating. Does not lock.
     """
     location = location or state.get("location")
     budget = budget if budget is not None else state.get("budget")
     if not location:
         return _tool_reply(NO_LOCATION_MESSAGE, tool_call_id, {})
+
+    locked_id = state.get("restaurant_id")
+    cart_n = cart_item_count(state.get("cart"))
+    if locked_id is not None and cart_n > 0:
+        return _tool_reply(
+            f"Session is locked to {state.get('restaurant_name')} "
+            f"(id={locked_id}) with {cart_n} item(s) in the cart. Browsing "
+            "other restaurants will empty the cart. Ask the user to confirm, "
+            "then call unlock_restaurant with confirm_switch=true (to browse) "
+            "or lock_restaurant with confirm_switch=true (if they named a "
+            "place).",
+            tool_call_id,
+            {"showcase": empty_showcase(showcase_step(state))},
+        )
+    releasing = locked_id is not None
+    old_name = state.get("restaurant_name") or f"id={locked_id}"
 
     with queries.session() as conn:
         rows = queries.search_restaurants(
@@ -267,13 +310,20 @@ def search_restaurants(
             limit=CANDIDATE_POOL,
         )
         if not rows:
+            empty = empty_showcase(showcase_step(state))
+            update: dict[str, Any] = {"showcase": empty}
+            prefix = ""
+            if releasing:
+                update = _release_lock_update(state, showcase=empty)
+                prefix = f"Unlocked {old_name}. "
             return _tool_reply(
-                f"No restaurants in the snapshot deliver to '{location}' "
+                prefix
+                + f"No restaurants in the snapshot deliver to '{location}' "
                 f"for '{craving}'. Ask the user for a nearby Karachi area "
                 "(Saddar, Garden, SMCHS, Tariq Road…) rather than showing "
                 "the other side of the city.",
                 tool_call_id,
-                {"showcase": empty_showcase(showcase_step(state))},
+                update,
             )
         m, C = ranking.compute_m_and_c(queries.dataset_rows(conn))
 
@@ -315,13 +365,18 @@ def search_restaurants(
         "The chat UI will render these as photo cards. Keep your spoken "
         "reply to a short recommendation, not a pasted list."
     )
+    if releasing:
+        lines.insert(0, f"Unlocked {old_name}.")
     showcase = {
         "kind": "restaurants",
         "title": f"Near {location}",
         "items": [_restaurant_card(row) for row in top],
         "step": showcase_step(state),
     }
-    return _tool_reply("\n".join(lines), tool_call_id, {"showcase": showcase})
+    update: dict[str, Any] = {"showcase": showcase}
+    if releasing:
+        update = _release_lock_update(state, showcase=showcase)
+    return _tool_reply("\n".join(lines), tool_call_id, update)
 
 
 @tool
@@ -333,9 +388,10 @@ def lock_restaurant(
 ) -> Command:
     """Lock this session to one restaurant so the menu and cart can be used.
 
-    If a different restaurant is already locked, this refuses unless
-    confirm_switch=True. Ask the user first, warn them the cart will be
-    emptied, and only then retry with confirm_switch=True.
+    If a different restaurant is already locked and the cart has items, this
+    refuses unless confirm_switch=True. Empty cart: switch immediately. Ask
+    the user first when the cart would be emptied, then retry with
+    confirm_switch=True.
     """
     current = state.get("restaurant_id")
 
@@ -356,13 +412,25 @@ def lock_restaurant(
             {},
         )
 
-    if current is not None and not confirm_switch:
+    cart_n = cart_item_count(state.get("cart"))
+    if current is not None and not confirm_switch and cart_n > 0:
         return _tool_reply(
             f"Session is locked to {state.get('restaurant_name')} "
-            f"(id={current}) with {cart_item_count(state.get('cart'))} item(s) "
+            f"(id={current}) with {cart_n} item(s) "
             f"in the cart. Switching to {restaurant['name']} will empty the "
             "cart. Ask the user to confirm, then call lock_restaurant again "
             "with confirm_switch=true.",
+            tool_call_id,
+            {},
+        )
+
+    availability = check_open(restaurant, state)
+    if availability.status == "closed":
+        return _tool_reply(
+            f"{restaurant['name']} (id={restaurant_id}) is not accepting "
+            f"orders right now ({availability.reason or 'closed'}). "
+            "Do not lock. Tell the user plainly and suggest other restaurants "
+            "from the last search.",
             tool_call_id,
             {},
         )
@@ -374,9 +442,52 @@ def lock_restaurant(
         "showcase": empty_showcase(showcase_step(state)),
     }
     message = f"Locked to {restaurant['name']} (id={restaurant_id})."
-    if current is not None:
+    if availability.status == "inconclusive":
+        message += (
+            f" Current opening status could not be verified "
+            f"({availability.reason or 'live check failed'}). "
+            "Mention this once; do not hedge every later sentence."
+        )
+    if current is not None and cart_n > 0:
         update["cart"] = []
         message += " Previous cart cleared because the restaurant changed."
+    return _tool_reply(message, tool_call_id, update)
+
+
+@tool
+def unlock_restaurant(
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    confirm_switch: bool = False,
+) -> Command:
+    """Release the session restaurant lock so the user can browse other places.
+
+    If the cart has items, this refuses unless confirm_switch=True. Ask the
+    user first, warn them the cart will be emptied, and only then retry with
+    confirm_switch=True. Empty cart: unlocks immediately, no confirmation.
+    Call this when they want other options but have not named a replacement.
+    """
+    current = state.get("restaurant_id")
+    if current is None:
+        return _tool_reply(
+            "No restaurant is locked. Search and lock one before using the menu.",
+            tool_call_id,
+            {},
+        )
+    cart_n = cart_item_count(state.get("cart"))
+    if cart_n > 0 and not confirm_switch:
+        return _tool_reply(
+            f"Session is locked to {state.get('restaurant_name')} "
+            f"(id={current}) with {cart_n} item(s) in the cart. Unlocking "
+            "will empty the cart. Ask the user to confirm, then call "
+            "unlock_restaurant again with confirm_switch=true.",
+            tool_call_id,
+            {},
+        )
+    update = _release_lock_update(state, clear_cart=cart_n > 0)
+    message = "Unlocked. Session is not tied to a restaurant."
+    if cart_n > 0:
+        message += " Previous cart cleared because the restaurant lock was released."
     return _tool_reply(message, tool_call_id, update)
 
 
@@ -682,7 +793,10 @@ def view_cart(state: Annotated[dict, InjectedState]) -> str:
     return "\n".join(lines)
 
 
-def build_order_summary(state: dict[str, Any]) -> dict[str, Any]:
+def build_order_summary(
+    state: dict[str, Any],
+    freshness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the handoff object shared by the tool and POST /confirm.
 
     Shaped like a Foodpanda cart checkout: line items, then delivery and
@@ -690,13 +804,37 @@ def build_order_summary(state: dict[str, Any]) -> dict[str, Any]:
     """
     cart = state.get("cart") or []
     totals = fees.estimate_fees(cart)
+    block = freshness or freshness_block(
+        checked=False, kind="unverified", reason="not checked"
+    )
+    if block.get("kind") == "ok":
+        price_note = (
+            "Prices and availability were checked against Foodpanda's live "
+            "menu just now."
+        )
+    elif block.get("kind") == "accepted_changes":
+        price_note = (
+            "Prices and availability were checked against Foodpanda's live "
+            "menu; the user accepted the listed changes."
+        )
+    elif block.get("checked"):
+        price_note = (
+            "Prices and availability were checked against Foodpanda's live menu."
+        )
+    else:
+        price_note = (
+            "Live menu check did not complete"
+            + (f" ({block.get('reason')})" if block.get("reason") else "")
+            + ". Prices come from the local snapshot and may be stale."
+        )
     return {
         "kind": "cart_summary",
         "disclaimer": (
             "This is a prepared cart summary only. No order has been placed "
-            "with Foodpanda or the restaurant, nothing is reserved, and prices "
-            "come from a local scraped snapshot rather than live checkout."
+            "with Foodpanda or the restaurant, and nothing is reserved. "
+            + price_note
         ),
+        "freshness": block,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "restaurant": {
             "id": state.get("restaurant_id"),
@@ -731,15 +869,74 @@ def build_order_summary(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _restaurant_for_lock(state: dict[str, Any]) -> dict[str, Any] | None:
+    restaurant_id = state.get("restaurant_id")
+    if restaurant_id is None:
+        return None
+    with queries.session() as conn:
+        return queries.get_restaurant(conn, restaurant_id)
+
+
+def prepare_confirm(
+    state: dict[str, Any],
+    *,
+    accept_changes: bool = False,
+) -> tuple[str | None, dict[str, Any] | None, list[dict[str, Any]] | None]:
+    """Shared confirm path for the tool and POST /confirm.
+
+    Returns (block_message, summary, cart_replace). block_message means do
+    not write order_summary. cart_replace is set when live prices / drops
+    should be applied to session state.
+    """
+    restaurant = _restaurant_for_lock(state)
+    check = precheck_cart(state, restaurant)
+    if check.status == "changes" and not accept_changes:
+        return format_cart_diff(check, state), None, None
+
+    working = dict(state)
+    cart_replace: list[dict[str, Any]] | None = None
+    kind = "ok"
+    reason = ""
+    if check.status == "changes" and accept_changes:
+        cart_replace = accepted_cart(state, check)
+        working["cart"] = cart_replace
+        kind = "accepted_changes"
+        reason = "user accepted live price/availability changes"
+        if not cart_replace:
+            return (
+                "Nothing left to confirm after dropping unavailable items. "
+                "Add something else or leave the cart empty.",
+                None,
+                cart_replace,
+            )
+    elif check.status == "inconclusive":
+        kind = "unverified"
+        reason = check.reason
+    elif check.status == "ok":
+        if check.priced_cart is not None:
+            working["cart"] = check.priced_cart
+        kind = "ok"
+
+    checked = check.status != "inconclusive"
+    summary = build_order_summary(
+        working,
+        freshness=freshness_block(checked=checked, kind=kind, reason=reason),
+    )
+    return None, summary, cart_replace
+
+
 @tool
 def confirm_order(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
+    accept_changes: bool = False,
 ) -> Command:
     """Finalize the cart into an order summary for the user to confirm.
 
     This does not place a real Foodpanda order. Say so plainly when you
-    report the result.
+    report the result. If the live check reports sold-out items or price
+    changes, this refuses until the user agrees and you retry with
+    accept_changes=True.
     """
     if state.get("restaurant_id") is None:
         return _tool_reply(NO_LOCK_MESSAGE, tool_call_id, {})
@@ -749,7 +946,16 @@ def confirm_order(
             "The cart is empty, so there is nothing to confirm.", tool_call_id, {}
         )
 
-    summary = build_order_summary(state)
+    blocked, summary, cart_replace = prepare_confirm(
+        state, accept_changes=accept_changes
+    )
+    if blocked:
+        update: dict[str, Any] = {}
+        if cart_replace is not None:
+            update["cart"] = cart_replace
+        return _tool_reply(blocked, tool_call_id, update)
+
+    assert summary is not None
     lines = [
         f"Cart summary for {summary['restaurant']['name']} "
         "(NOT placed with Foodpanda):",
@@ -761,11 +967,21 @@ def confirm_order(
     lines.append(f"Platform fee: {_money(summary['platform_fee'])}")
     lines.append(f"Total: {_money(summary['total'])}")
     lines.append(summary["notes"])
+    freshness = summary.get("freshness") or {}
+    if freshness.get("kind") == "unverified":
+        lines.append(
+            "Live prices/availability could not be verified"
+            + (f" ({freshness.get('reason')})" if freshness.get("reason") else "")
+            + ". Say so once."
+        )
     lines.append(
         "Tell the user this is a cart they can recreate in the Foodpanda app; "
         "this assistant cannot place the order or track it."
     )
-    return _tool_reply("\n".join(lines), tool_call_id, {"order_summary": summary})
+    update = {"order_summary": summary}
+    if cart_replace is not None:
+        update["cart"] = cart_replace
+    return _tool_reply("\n".join(lines), tool_call_id, update)
 
 
 TOOLS = [
@@ -773,6 +989,7 @@ TOOLS = [
     search_restaurants,
     get_reviews,
     lock_restaurant,
+    unlock_restaurant,
     search_menu,
     add_to_cart,
     remove_from_cart,

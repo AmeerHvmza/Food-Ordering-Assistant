@@ -940,4 +940,53 @@ location returns **AMBIGUOUS** (Johar vs FB Area). `Jackson's` returns
 **NO_MATCH** (1 token).
 
 
+## 12.4 Restaurant lock release on reconsideration (2026-08-27)
+
+Bug: after `restaurant_id` was set, “show me other options” / a real area
+change / a large budget drop could call `search_restaurants` (which is not
+scoped to the lock) and paint new cards while menu/cart still targeted the
+old restaurant. `lock_restaurant` could only lock *to* a new id.
+
+Fix:
+
+- New tool `unlock_restaurant(confirm_switch=False)`. Empty cart: unlocks
+  immediately. Cart has items: same confirm-before-clearing rule as a switch.
+- `search_restaurants` while locked: empty cart → release lock in the same
+  Command as the results. Non-empty cart → refuse, no new cards, tell the
+  model to confirm then unlock or `lock_restaurant(..., confirm_switch=true)`.
+- `lock_restaurant` skips confirmation when the cart is empty.
+- Prompt (ROLE + ROUTING) describes reconsideration vs minor trim (3000→800
+  vs 3000→2800; Saddar→DHA vs Johar/Jauhar). `remember_preferences` does not
+  unlock.
+
+Tests: `tests/test_lock_release.py` (tool gate + two scripted conversations).
+Live UI transcripts are left to the operator; this session did not spend a
+model call on them.
+
+
+## 12.5 search_menu dropped exact dish-family matches (2026-08-27)
+
+Not the name-match refactor. `search_menu` never used `db.name_match`; that
+work only scores restaurant names (`search_restaurants` / `get_reviews` /
+import). This was pre-existing `word_match_sql` semantics on the menu path.
+
+Query `"cheese paratha"` at New Quetta Ajwa Hotel (id=166) tokenizes to
+`['cheese', 'paratha']`. `word_match_sql` ORs every term across name /
+description / category, so Plain Paratha and Cheese Omelette count as hits.
+All 8 Cheese Paratha rows **were in the 23-row candidate set**. Then
+`ORDER BY price ASC LIMIT 10` (the chat tool cap) filled the page with
+cheaper one-word items (ranks 1–10). The family sat at ranks 12–22 and
+was cut. No inverted filter, no dedupe.
+
+Fix: `word_match_all_sql` — each query term must appear as a whole word in
+at least one of those columns. Restaurant search still uses OR. `search_deals`
+uses AND as well so a multi-word craving does not pull one-word deal rows.
+
+Retest `search_menu(..., query="cheese paratha", limit=10)` at Ajwa: all 8
+Cheese Paratha items plus Chicken Cheese Anda Paratha. Missing family: none.
+Second restaurant Ghousia Fast Food & BBQ, `"chicken cheese"`: all 9
+chicken+cheese name rows returned.
+
+Tests: `tests/test_search_menu.py`.
+
 

@@ -55,7 +55,12 @@ def _padded_sql(column: str) -> str:
 
 
 def word_match_sql(columns: list[str], terms: list[str]) -> tuple[str, list[str]]:
-    """Whole-word match. 'desi' hits 'Desi Ghee', not 'Desire' or 'desiccated'."""
+    """Whole-word match. 'desi' hits 'Desi Ghee', not 'Desire' or 'desiccated'.
+
+    Terms are OR'd: any term in any column counts. That is the right default
+    for restaurant search (a craving word can hit cuisine *or* name). Menu
+    search of a multi-word dish uses word_match_all_sql instead.
+    """
     clauses: list[str] = []
     params: list[str] = []
     for column in columns:
@@ -64,6 +69,24 @@ def word_match_sql(columns: list[str], terms: list[str]) -> tuple[str, list[str]
             clauses.append(f"{padded} LIKE ?")
             params.append(f"% {term} %")
     return "(" + " OR ".join(clauses) + ")", params
+
+
+def word_match_all_sql(columns: list[str], terms: list[str]) -> tuple[str, list[str]]:
+    """Each term must appear as a whole word in at least one of the columns.
+
+    'cheese paratha' keeps Cheese Paratha and drops Plain Paratha / Cheese
+    Omelette. Combined with ORDER BY price LIMIT, OR matching was filling the
+    page with cheaper single-word hits and cutting the actual dish family.
+    """
+    if not terms:
+        return "1=1", []
+    parts: list[str] = []
+    params: list[str] = []
+    for term in terms:
+        clause, term_params = word_match_sql(columns, [term])
+        parts.append(clause)
+        params.extend(term_params)
+    return "(" + " AND ".join(parts) + ")", params
 
 
 def location_match_sql(location: str) -> tuple[str, list[str]]:
@@ -340,14 +363,19 @@ def search_menu(
     category: str | None = None,
     limit: int = 12,
 ) -> list[dict[str, Any]]:
-    """Search one restaurant's menu. Filters are dropped before returning none."""
+    """Search one restaurant's menu. Filters are dropped before returning none.
+
+    Multi-word queries require every term (AND). OR + cheapest-first LIMIT was
+    returning Plain Paratha / Cheese Omelette for 'cheese paratha' and cutting
+    the actual Cheese Paratha family off the page.
+    """
     terms = _terms(query)
 
     def run(use_terms: bool, use_price: bool, use_category: bool) -> list[dict]:
         clauses = ["mc.restaurant_id = ?"]
         params: list[Any] = [restaurant_id]
         if use_terms and terms:
-            like, like_params = word_match_sql(
+            like, like_params = word_match_all_sql(
                 ["mi.name", "mi.description", "mc.category_name"], terms
             )
             clauses.append(like)
@@ -446,7 +474,7 @@ def search_deals(
     clauses = ["mc.restaurant_id = ?", deal_clause]
     params: list[Any] = [restaurant_id]
     if terms:
-        like, like_params = word_match_sql(
+        like, like_params = word_match_all_sql(
             ["mi.name", "mi.description", "mc.category_name"], terms
         )
         clauses.append(like)

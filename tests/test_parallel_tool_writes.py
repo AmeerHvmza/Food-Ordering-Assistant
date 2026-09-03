@@ -14,14 +14,31 @@ one of the two items.
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from agent.freshness import OpenCheck
 from agent.state import OrderState, serialize_state
 from agent.tools import TOOLS
 from db import queries
+
+_open_patch = None
+
+
+def setUpModule() -> None:
+    global _open_patch
+    _open_patch = patch(
+        "agent.tools.check_open", return_value=OpenCheck("open")
+    )
+    _open_patch.start()
+
+
+def tearDownModule() -> None:
+    if _open_patch is not None:
+        _open_patch.stop()
 
 
 def _tool_step(state: dict, calls: list[dict]) -> dict:

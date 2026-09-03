@@ -20,6 +20,12 @@ class PromptSizeTests(unittest.TestCase):
         self.assertIn("Roman Urdu", full)
         self.assertIn("TONE", full)
         self.assertIn("TONE & LANGUAGE", routing)
+        self.assertIn("unlock_restaurant", full)
+        self.assertIn("unlock_restaurant", routing)
+        self.assertIn("3000→800", full)
+        self.assertIn("Johar/Jauhar", full)
+        self.assertIn("remember_preferences never unlocks", full)
+        self.assertIn("remember_preferences does not unlock", routing)
 
 
 if __name__ == "__main__":

@@ -137,7 +137,8 @@ class OrderState(TypedDict, total=False):
     """One ordering session.
 
     Milestone 1 locks a single restaurant per session; restaurant_id is set by
-    the lock_restaurant tool and only cleared on a user-confirmed switch.
+    lock_restaurant and cleared by unlock_restaurant, by search_restaurants
+    when the cart is empty, or on a confirmed switch.
 
     Every key a tool can write carries a reducer: the model emits parallel tool
     calls for multi-item requests, and an unannotated key rejects two writes in

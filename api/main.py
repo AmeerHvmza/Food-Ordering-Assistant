@@ -45,7 +45,7 @@ load_dotenv()
 
 from agent.llm import NoProviderConfigured, describe  # noqa: E402
 from agent.state import cart_item_count, serialize_state  # noqa: E402
-from agent.tools import build_order_summary  # noqa: E402
+from agent.tools import prepare_confirm  # noqa: E402
 from api import sessions  # noqa: E402
 from api.models import (  # noqa: E402
     CartResponse,
@@ -550,17 +550,23 @@ def get_cart(
     responses={
         **AUTH_ERRORS,
         404: {"model": ErrorResponse, "description": "No such session for this key."},
-        409: {"model": ErrorResponse, "description": "No restaurant locked, or empty cart."},
+        409: {
+            "model": ErrorResponse,
+            "description": "No restaurant locked, empty cart, or live menu diff.",
+        },
     },
     summary="Confirm the order",
     description=(
         "Finalises the cart into an order summary. Uses the same builder as "
         "the assistant's own confirm tool, so both paths produce identical "
-        "objects. **No real order is placed.**"
+        "objects. **No real order is placed.** Pass accept_changes=true after "
+        "a 409 freshness diff if the user still wants to proceed."
     ),
 )
 def confirm(
-    session_id: str, principal: Principal = Depends(authenticate)
+    session_id: str,
+    accept_changes: bool = False,
+    principal: Principal = Depends(authenticate),
 ) -> dict[str, Any]:
     values = sessions.get_values(session_id, principal.namespace)
     if not values:
@@ -573,10 +579,19 @@ def confirm(
     if not values.get("cart"):
         raise HTTPException(status_code=409, detail="Cart is empty.")
 
-    summary = build_order_summary(values)
-    sessions.update_values(
-        session_id, {"order_summary": summary}, principal.namespace
+    blocked, summary, cart_replace = prepare_confirm(
+        values, accept_changes=accept_changes
     )
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "freshness_changes", "message": blocked},
+        )
+    assert summary is not None
+    update: dict[str, Any] = {"order_summary": summary}
+    if cart_replace is not None:
+        update["cart"] = cart_replace
+    sessions.update_values(session_id, update, principal.namespace)
     return summary
 
 

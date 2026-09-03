@@ -95,6 +95,8 @@ def normalize_vendor(raw: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         longitude = None
 
+    extra = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+
     return {
         "code": code,
         "name": raw.get("name") or "Unknown",
@@ -107,6 +109,13 @@ def normalize_vendor(raw: dict[str, Any]) -> dict[str, Any]:
         "review_number": raw.get("review_number"),
         "latitude": latitude,
         "longitude": longitude,
+        # Additive; scraper insert ignores unknown keys. Used by the agent's
+        # lock-time freshness check, not by the nightly snapshot write.
+        "is_active": raw.get("is_active"),
+        "is_busy": raw.get("is_busy"),
+        "is_delivery_enabled": raw.get("is_delivery_enabled"),
+        "is_delivery_available": extra.get("is_delivery_available"),
+        "is_temporary_closed": extra.get("is_temporary_closed"),
     }
 
 
@@ -153,6 +162,7 @@ def normalize_menu(vendor_payload: dict[str, Any]) -> list[dict[str, Any]]:
                         "original_price": original_price,
                         "description": product.get("description") or None,
                         "image_url": image,
+                        "is_sold_out": bool(product.get("is_sold_out")),
                     }
                 )
                 seen_names.add(name)
@@ -229,6 +239,7 @@ def fetch_vendor_meta(
     vendor_code: str,
     lat: float | None = None,
     lng: float | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any] | None:
     """
     Fetch listing-level fields for one vendor from pk.fd-api.com.
@@ -252,12 +263,13 @@ def fetch_vendor_meta(
         "longitude": str(lng),
         "language_id": "1",
     }
+    wait = timeout if timeout is not None else config.REQUEST_TIMEOUT_SEC
     try:
         resp = requests.get(
             url,
             headers=_fd_api_headers(),
             params=params,
-            timeout=config.REQUEST_TIMEOUT_SEC,
+            timeout=wait,
         )
         LAST_MENU_STATUS = resp.status_code
         if resp.status_code != 200:
@@ -283,6 +295,7 @@ def fetch_menu(
     vendor_code: str,
     lat: float | None = None,
     lng: float | None = None,
+    timeout: float | None = None,
 ) -> list[dict[str, Any]] | None:
     """
     Fetch a vendor menu via pk.fd-api.com (include=menus).
@@ -314,13 +327,14 @@ def fetch_menu(
     global LAST_MENU_STATUS
     LAST_MENU_STATUS = None
     saw_403 = False
+    wait = timeout if timeout is not None else config.REQUEST_TIMEOUT_SEC
     for endpoint, query in candidates:
         try:
             resp = requests.get(
                 endpoint,
                 headers=_fd_api_headers(),
                 params=query,
-                timeout=config.REQUEST_TIMEOUT_SEC,
+                timeout=wait,
             )
             LAST_MENU_STATUS = resp.status_code
             if resp.status_code == 403:
